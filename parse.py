@@ -385,22 +385,36 @@ async def extract_with_llama_async(file_path, filename):
     """
     print(f"Starting extraction for: {file_path}")
     
+    def normalize_keys(result):
+        """Converts keys in the 'extracted_data' field to lowercase for consistency."""
+        if result and "extracted_data" in result and isinstance(result["extracted_data"], dict):
+            
+            # === DEBUG PRINT 0 ===
+            if "Exam_Result" in result["extracted_data"]:
+                print(f"DEBUG normalize_keys: Found 'Exam_Result' key. Normalizing...")
+                
+            # Create a new dictionary with lowercase keys
+            result["extracted_data"] = {k.lower(): v for k, v in result["extracted_data"].items()}
+        return result
+    
     try:
         # 1. Send the full file path to agent
         result = await asyncio.to_thread(agent.extract, file_path)
         
-        # 2. Get the list of results (
+        # 2. Get the list of results
         results = result.data if hasattr(result, 'data') else result 
         
-        # 3. Ensure 'results' is always a list for the pairing logic
+        # 3. Ensure 'results' is always a list
         if not isinstance(results, list):
             results = [results] if results and not results.get("error") else []
         
-        # 4. Run the pairing logic on the full list of extracted pages/documents
-
-        paired_results = pair_dl40_pages(results)
+        # 4. FIX: Normalize all keys to lowercase immediately after extraction
+        normalized_results = [normalize_keys(r) for r in results]
         
-        # 5. Return the consolidated list
+        # 5. Run the pairing logic on the full list of extracted pages/documents
+        paired_results = pair_dl40_pages(normalized_results)
+        
+        # 6. Return the consolidated list
         return paired_results
         
     except Exception as e:
@@ -413,8 +427,7 @@ async def extract_with_llama_async(file_path, filename):
 def pair_dl40_pages(results):
     """
     Pair DL-40-Front and DL-40-Back pages and merge their data.
-    FIX: This function now discards lone DL-40-Back pages, as they
-    have no name and cannot be processed by the add_to_table function.
+    (Assumes keys are already lowercase due to normalization in caller function)
     """
     paired = []
     i = 0
@@ -438,6 +451,9 @@ def pair_dl40_pages(results):
                     # --- PAIRING LOGIC ---
                     front_data = current.get("extracted_data", {})
                     back_data = next_page.get("extracted_data", {})
+                    
+                    # === DEBUG PRINT 1 ===
+                    print(f"DEBUG pair_dl40_pages: Found DL-40 Back. Raw extracted_data: {back_data}")
                     
                     skill_date_front_str = front_data.get("skills_test_date")
                     exam_date_back_str = back_data.get("exam_date")
@@ -474,10 +490,12 @@ def pair_dl40_pages(results):
                             "dl_number": front_data.get("dl_number"),
                             "date_of_birth": front_data.get("date_of_birth"),
                             "skills_test_date": (final_skill_date + warning_sign) if final_skill_date else "N/A",
-                            # FIX: Read capitalized "Exam_Result" and save as lowercase "exam_result"
-                            "exam_result": back_data.get("Exam_Result") 
+                            "exam_result": back_data.get("exam_result") # Relies on normalization
                         }
                     }
+                    
+                    # === DEBUG PRINT 2 ===
+                    print(f"DEBUG pair_dl40_pages: Merged record 'exam_result': {merged['extracted_data'].get('exam_result')}")
                     
                     paired.append(merged)
                     i += 2  # Skip both pages (Front and Back)
@@ -489,8 +507,7 @@ def pair_dl40_pages(results):
         
         # Case 2: This is a DL-40 Back
         elif is_dl40_back:
-            # This is a lone DL-40 Back page.
-            # It has no name, so it cannot be processed. Discard it.
+            # This is a lone DL-40 Back page. Discard it.
             print(f"Skipping lone DL-40 Back document (no name to match).")
             i += 1
             continue
@@ -520,9 +537,13 @@ async def read_async():
 
 async def auto_async():
     """
-    Async version of auto() - Processes files from 'dat' folder and returns 
-    a formatted list for preview WITHOUT adding to persistence.
+    Async version of auto() - Processes files, runs consolidation, and returns 
+    a consolidated list of records for preview WITHOUT adding to persistence.
+    
+    FIXED: Restoring the consolidation logic to ensure all fields (like exam_result 
+    and skills_test_date) are properly merged before being sent to the preview.
     """
+    global student_table 
     
     files = [f for f in os.listdir(input_folder) if is_valid_input_file(f)]
     
@@ -530,41 +551,35 @@ async def auto_async():
         print("No valid files found in Dat folder.")
         return []
     
-    print(f"Processing {len(files)} files for preview from 'dat' folder...")
+    print(f"Processing {len(files)} files for preview...")
+    
+    # 1. Store the CURRENT state of the persistent table
+    original_table_state = student_table.copy()
+    
+    # 2. Clear the table for temporary, in-memory processing of new files
+    student_table = {} 
     
     try:
-        # 1. Process files and get the RAW results (do NOT add to table)
-        raw_results = await process_files_async(files, display_results=False, add_to_table_flag=False)
+        # 3. Process files and force them to be ADDED to the now-empty global table.
+        # This runs ALL consolidation logic (DL-40 merge, name priority, ITAD merge).
+        # add_to_table_flag=True forces the data into the temporary student_table.
+        await process_files_async(files, display_results=False, add_to_table_flag=True)
 
-        # 2. Format the raw results into the preview list
-        formatted_results = []
-        for result, filename in raw_results:
-            if result and not result.get("error"):
-                extracted = result.get("extracted_data", {})
-                
-                # FIX: Check for both lowercase (merged) and uppercase (raw) keys
-                exam_result_value = extracted.get("exam_result") or extracted.get("Exam_Result") or "N/A"
-                
-                formatted_results.append({
-                    "name": extracted.get("name", "N/A"),
-                    "dl_number": extracted.get("dl_number", "N/A"),
-                    "dob": extracted.get("date_of_birth", "N/A"),
-                    "skills_test_date": extracted.get("skills_test_date", "N/A"),
-                    "exam_result": exam_result_value, # Use the normalized value
-                    "ITTD_completion_date": extracted.get("ITTD_completion_date", "N/A"),
-                    "ITAD_completion_date": extracted.get("ITAD_completion_date", "N/A"),
-                    "de_964_number": extracted.get("pt_dee_d_number", "N/A"),
-                    "adee_number": extracted.get("ADEE_number", "N/A"),
-                    "_raw_data": result,  # Store raw data for later use
-                    "_filename": filename  # Store filename for later use
-                })
+        # 4. Pull the CONSOLIDATED, formatted results from the temporary table state
+        # The display_table function reads the temporary consolidated student_table
+        consolidated_preview_data = display_table() 
         
-        print("Preview processing complete.")
-        return formatted_results
+        # 5. Return the consolidated list for display.
+        return consolidated_preview_data
         
     except Exception as e:
-        print(f"Error during preview processing: {e}")
+        print(f"Error during preview consolidation: {e}")
         return []
+    finally:
+        # 6. RESTORE the original persistent table state, discarding the temporary data
+        student_table = original_table_state
+        # We do NOT call save_student_table() here, preserving the original disk state.
+        print("Preview consolidation complete. Restored original table state.")
 
 
 async def process_files_async(files, display_results=True, add_to_table_flag=True):
@@ -978,25 +993,21 @@ def add_to_table(data, filename):
     # Update fields based on document type and available data
     student_record = student_table[student_name]
     
-    #
-    # FIX: NORMALIZE THE EXAM_RESULT KEY BEFORE MAPPING
-    # This checks for the capitalized key and moves it to the lowercase key
-    #
-    if "Exam_Result" in extracted_data and "exam_result" not in extracted_data:
-        extracted_data["exam_result"] = extracted_data.pop("Exam_Result")
-        
-    
     # Map fields from extracted data to table columns
     field_mappings = {
         "dl_number": "dl_number",
         "date_of_birth": "date_of_birth", 
         "skills_test_date": "skills_test_date",
-        "exam_result": "exam_result", # Now this will find the normalized key
+        "exam_result": "exam_result", 
         "pt_dee_d_number": "de_964_number",
-        "ADEE_number": "adee_number",
-        "ITTD_COMPLETION_DATE": "ittd_completion_date", 
-        "ITAD_COMPLETION_DATE": "itad_completion_date"  
+        "adee_number": "adee_number",
+        "ittd_completion_date": "ittd_completion_date", 
+        "itad_completion_date": "itad_completion_date"  
     }
+    
+    # === DEBUG PRINT 3 ===
+    exam_result_value = extracted_data.get("exam_result")
+    print(f"DEBUG add_to_table: Checking for 'exam_result'. Found value: {exam_result_value}")
     
     # Define single-source fields that must fill if empty, as they usually come from one document
     single_source_fields = [
@@ -1025,6 +1036,8 @@ def add_to_table(data, filename):
                 current_value = student_record[table_field]
                 if not current_value or current_value == "N/A":
                     student_record[table_field] = value
+                    if table_field == "exam_result":
+                         print(f"DEBUG add_to_table: SAVING 'exam_result' with value: {value}")
                     continue 
             
             
