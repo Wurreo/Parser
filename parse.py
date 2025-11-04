@@ -213,6 +213,7 @@ async def process_folder_async(folder_info):
                     "dl_number": extracted.get("dl_number", "N/A"),
                     "dob": extracted.get("date_of_birth", "N/A"),
                     "skills_test_date": extracted.get("skills_test_date", "N/A"),
+                    "Exam_Result": extracted.get("exam_result", "N/A"),
                     "ITTD_completion_date": extracted.get("ITTD_completion_date", "N/A"),
                     "ITAD_completion_date": extracted.get("ITAD_completion_date", "N/A"),
                     "de_964_number": extracted.get("pt_dee_d_number", "N/A"),
@@ -415,6 +416,14 @@ def pair_dl40_pages(results):
     while i < len(results):
         current = results[i]
         doc_type = current.get("document_type", "").lower()
+        
+        # **FIX: Neutralize the examiner name from the DL-40 back page**
+        is_dl40_back = "dl-40-back" in doc_type or "dl-40 back" in doc_type
+        if is_dl40_back:
+             # Ensure the examiner name (if extracted as 'name') is ignored.
+             if "extracted_data" in current and "name" in current["extracted_data"]:
+                 current["extracted_data"]["name"] = None
+        # **END FIX**
         
         # Check if this is a DL-40-Front
         if "dl-40-front" in doc_type or "dl-40 front" in doc_type:
@@ -842,45 +851,47 @@ def find_matching_student(new_name):
     return best_match if best_score >= 20 else None
 
 
-def get_best_name(name1, name2, doc_type1=None, doc_type2=None):
-    """Return the more complete name between two options, prioritizing Impact certificates"""
-    if not name1:
-        return name2
-    if not name2:
-        return name1
+# --- Document Priority Configuration ---
+PRIORITY_SCORES = {
+    # High Priority: Primary sources for student ID and name (100)
+    "dl-40": 100,
+    "dl-40 front": 100,
+    "driver license": 100,
     
-    # Check if either name comes from an Impact certificate
-    impact_types = ["adult impact certificate", "teen impact certificate"]
+    # Medium Priority: State-issued certs with reliable name info (80)
+    "de-964 certificate": 80,
+    "adee-1317 certificate": 80,
     
-    name1_from_impact = doc_type1 and any(impact in doc_type1.lower() for impact in impact_types)
-    name2_from_impact = doc_type2 and any(impact in doc_type2.lower() for impact in impact_types)
+    # Low Priority: Impact certs often have abbreviated names or less official formatting (50)
+    "teen impact certificate": 50,
+    "adult impact certificate": 50,
+    "unknown": 0,
+}
+
+def get_doc_priority(doc_type):
+    """Maps document type to a consistent priority score."""
+    if not doc_type:
+        return 0
+    clean_type = doc_type.lower().strip()
+    # The 'dl-40' entry covers cases where it is merged or simply identified as 'DL-40'
+    return PRIORITY_SCORES.get(clean_type, 0)
+
+def goodest_name(name):
+    """
+    Calculates a score based on name length and word count (higher is better).
+    This function leverages the existing clean_name helper.
+    """
+    if not name:
+        return (0, 0)
     
-    # If only one is from Impact cert, prefer that one
-    if name1_from_impact and not name2_from_impact:
-        return name1
-    elif name2_from_impact and not name1_from_impact:
-        return name2
+    # Note: clean_name is defined earlier in parse.py (around line 497)
+    clean = clean_name(name) 
+    words = clean.split()
+    word_count = len(words)
+    char_count = len(clean) # Total characters in the cleaned name
     
-    # If both or neither are from Impact certs, use original logic:
-    # --- START REVISED LOGIC ---
-    clean1 = clean_name(name1)
-    clean2 = clean_name(name2)
-    
-    # 1. Compare by number of words (favors John M. Smith over John Smith)
-    if len(clean1.split()) > len(clean2.split()):
-        return name1
-    elif len(clean2.split()) > len(clean1.split()):
-        return name2
-    
-    # 2. If same number of words, compare by total character length (favors 'Michael' over 'Mike')
-    elif len(clean1) > len(clean2):
-        return name1
-    elif len(clean2) > len(clean1):
-        return name2
-    
-    # 3. If everything is equal, keep the original name (name1)
-    else:
-        return name1
+    # Return as a tuple for lexicographical comparison: (word_count, char_count)
+    return (word_count, char_count)
 
 
 
@@ -920,7 +931,7 @@ def add_to_table(data, filename):
                 existing_doc_type = last_doc.split("(")[-1].replace(")", "")
         
         # Check if we need to update to a better name (prioritizing length/completeness)
-        better_name = get_best_name(matching_student, raw_name, existing_doc_type, doc_type)
+        better_name = goodest_name(matching_student, raw_name, existing_doc_type, doc_type)
         if better_name != matching_student:
             # Create new entry with better name and copy all data
             student_table[better_name] = student_table[matching_student].copy()
@@ -1011,6 +1022,7 @@ def display_table():
             "dl_number": record.get("dl_number") or "N/A",
             "dob": record.get("date_of_birth") or "N/A",
             "skills_test_date": record.get("skills_test_date") or "N/A",
+            "exam_result": record.get("exam_result") or "N/A",
             "de_964_number": record.get("de_964_number") or "N/A",
             "adee_number": record.get("adee_number") or "N/A",
             "ittd_completion_date": record.get("ittd_completion_date") or "N/A",
@@ -1170,19 +1182,10 @@ def show_table():
     display_table()
 
 
-# === Table Storage ===
+# === Table Storing ===
 
 def group_students_by_month():
-    """
-    Group students by month based on skills_test_date.
     
-    ENHANCED: Creates a special 'Unknown' group for students with:
-    - Missing skills_test_date (N/A, None, "Not found")
-    - Invalid date formats that can't be parsed
-    
-    This allows driving schools to identify and process documents that need attention.
-    """
-
     if not student_table:
         return []
     
@@ -1192,18 +1195,24 @@ def group_students_by_month():
     for name, record in student_table.items():
         skills_date = record.get("skills_test_date")
         
-        # Check if date is missing or invalid
-        if not skills_date or skills_date == "N/A" or skills_date == "Not found":
-            unknown_month.append({
+        # Helper to create a consistent student dict for export
+        def create_student_dict(date_value):
+            return {
                 "name": record["name"],
                 "dl_number": record["dl_number"] or "N/A",
                 "dob": record["date_of_birth"] or "N/A",
-                "skills_test_date": "N/A",
+                "skills_test_date": date_value or "N/A",
+                "exam_result": record.get("exam_result") or "N/A", # ADDED FOR MONTHLY TABLE
                 "ittd_completion_date": record["ittd_completion_date"] or "N/A",
                 "itad_completion_date": record["itad_completion_date"] or "N/A",
                 "de_964_number": record["de_964_number"] or "N/A",
                 "adee_number": record["adee_number"] or "N/A",
-            })
+            }
+
+        
+        # Check if date is missing or invalid
+        if not skills_date or skills_date == "N/A" or skills_date == "Not found":
+            unknown_month.append(create_student_dict("N/A"))
             continue
         
         try:
@@ -1218,16 +1227,7 @@ def group_students_by_month():
             
             if not date_obj:
                 # Couldn't parse date, add to unknown
-                unknown_month.append({
-                    "name": record["name"],
-                    "dl_number": record["dl_number"] or "N/A",
-                    "dob": record["date_of_birth"] or "N/A",
-                    "skills_test_date": skills_date,
-                    "ittd_completion_date": record["ittd_completion_date"] or "N/A",
-                    "itad_completion_date": record["itad_completion_date"] or "N/A",
-                    "de_964_number": record["de_964_number"] or "N/A",
-                    "adee_number": record["adee_number"] or "N/A",
-                })
+                unknown_month.append(create_student_dict(skills_date))
                 continue
             
             month_key = f"{date_obj.strftime('%B')}_{date_obj.year}"
@@ -1241,28 +1241,10 @@ def group_students_by_month():
                     "students": []
                 }
             
-            monthly_groups[month_key]["students"].append({
-                "name": record["name"],
-                "dl_number": record["dl_number"] or "N/A",
-                "dob": record["date_of_birth"] or "N/A",
-                "skills_test_date": skills_date,
-                "ittd_completion_date": record["ittd_completion_date"] or "N/A",
-                "itad_completion_date": record["itad_completion_date"] or "N/A",
-                "de_964_number": record["de_964_number"] or "N/A",
-                "adee_number": record["adee_number"] or "N/A",
-            })
+            monthly_groups[month_key]["students"].append(create_student_dict(skills_date))
         except Exception as e:
             print(f"Error parsing date for {name}: {e}")
-            unknown_month.append({
-                "name": record["name"],
-                "dl_number": record["dl_number"] or "N/A",
-                "dob": record["date_of_birth"] or "N/A",
-                "skills_test_date": skills_date,
-                "ittd_completion_date": record["ittd_completion_date"] or "N/A",
-                "itad_completion_date": record["itad_completion_date"] or "N/A",
-                "de_964_number": record["de_964_number"] or "N/A",
-                "adee_number": record["adee_number"] or "N/A",
-            })
+            unknown_month.append(create_student_dict(skills_date))
     
     # Sort by year and month
     sorted_groups = sorted(monthly_groups.values(), 
