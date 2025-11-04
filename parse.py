@@ -198,23 +198,24 @@ async def process_folder_async(folder_info):
         # Temporarily change input_folder to the selected folder
         globals()['input_folder'] = folder_path
         
-        # CHANGED: Pass add_to_table_flag=False to prevent automatic addition
         raw_results = await process_files_async(valid_files, display_results=False, add_to_table_flag=False)
         
         print(f"Completed processing files from: {folder_path}")
         
-        # CHANGED: Return formatted results for preview
         formatted_results = []
         for result, filename in raw_results:
             if result and not result.get("error"):
                 extracted = result.get("extracted_data", {})
-                # This dictionary is what the GUI's render_table function receives
+                
+                # FIX: Check for both lowercase (merged) and uppercase (raw) keys
+                exam_result_value = extracted.get("exam_result") or extracted.get("Exam_Result") or "N/A"
+
                 formatted_results.append({
                     "name": extracted.get("name", "N/A"),
                     "dl_number": extracted.get("dl_number", "N/A"),
                     "dob": extracted.get("date_of_birth", "N/A"),
                     "skills_test_date": extracted.get("skills_test_date", "N/A"),
-                    "exam_result": extracted.get("exam_result", "N/A"), # FIX: This key must be present
+                    "exam_result": exam_result_value, # Use the normalized value
                     "ITTD_completion_date": extracted.get("ITTD_completion_date", "N/A"),
                     "ITAD_completion_date": extracted.get("ITAD_completion_date", "N/A"),
                     "de_964_number": extracted.get("pt_dee_d_number", "N/A"),
@@ -410,7 +411,11 @@ async def extract_with_llama_async(file_path, filename):
         return [{"error": f"Extraction failed: {str(e)}"}]
 
 def pair_dl40_pages(results):
-    """Pair DL-40-Front and DL-40-Back pages and merge their data"""
+    """
+    Pair DL-40-Front and DL-40-Back pages and merge their data.
+    FIX: This function now discards lone DL-40-Back pages, as they
+    have no name and cannot be processed by the add_to_table function.
+    """
     paired = []
     i = 0
     
@@ -418,16 +423,11 @@ def pair_dl40_pages(results):
         current = results[i]
         doc_type = current.get("document_type", "").lower()
         
-        # FIX: Neutralize the examiner name from the DL-40 back page
+        is_dl40_front = "dl-40-front" in doc_type or "dl-40 front" in doc_type
         is_dl40_back = "dl-40-back" in doc_type or "dl-40 back" in doc_type
-        if is_dl40_back:
-             # Ensure the examiner name (if extracted as 'name') is ignored.
-             if "extracted_data" in current and "name" in current["extracted_data"]:
-                 current["extracted_data"]["name"] = None
-        # END FIX
         
-        # Check if this is a DL-40-Front
-        if "dl-40-front" in doc_type or "dl-40 front" in doc_type:
+        # Case 1: This is a DL-40 Front
+        if is_dl40_front:
             # Look for the next page to see if it's DL-40-Back
             if i + 1 < len(results):
                 next_page = results[i + 1]
@@ -435,87 +435,68 @@ def pair_dl40_pages(results):
                 
                 if "dl-40-back" in next_doc_type or "dl-40 back" in next_doc_type:
                     
+                    # --- PAIRING LOGIC ---
                     front_data = current.get("extracted_data", {})
                     back_data = next_page.get("extracted_data", {})
                     
                     skill_date_front_str = front_data.get("skills_test_date")
                     exam_date_back_str = back_data.get("exam_date")
                     
-                    # Initialize final date and warning
                     final_skill_date = skill_date_front_str or exam_date_back_str
                     warning_sign = ""
                     
-                    # --- EMBEDDED DATE COMPARISON AND CONSOLIDATION LOGIC ---
-                    
-                    # List of formats to try for robust parsing
+                    # (Date comparison logic...)
                     date_formats = ["%m-%d-%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y", "%B %d, %Y"]
-
                     def safe_parse(date_str):
-                        if not date_str or date_str.lower() in ["n/a", "not found"]:
-                            return None
+                        if not date_str or date_str.lower() in ["n/a", "not found"]: return None
                         for fmt in date_formats:
-                            try:
-                                return datetime.strptime(date_str, fmt), date_str
-                            except ValueError:
-                                continue
+                            try: return datetime.strptime(date_str, fmt), date_str
+                            except ValueError: continue
                         return None
 
                     parsed_front = safe_parse(skill_date_front_str)
                     parsed_back = safe_parse(exam_date_back_str)
-                    
                     obj1, str1 = parsed_front if parsed_front else (None, None)
                     obj2, str2 = parsed_back if parsed_back else (None, None)
 
-                    # Case 1: Both dates parsed and don't match
                     if obj1 and obj2 and obj1 != obj2:
-                        
-                        # Select the most recent date object
-                        if obj1 > obj2:
-                            final_skill_date = str1
-                        else:
-                            final_skill_date = str2
-
-                        # Set the warning sign and print message
+                        if obj1 > obj2: final_skill_date = str1
+                        else: final_skill_date = str2
                         warning_sign = " ⚠️" 
                         print(f"DL-40 Date Conflict: Front ({str1}) vs. Back ({str2}). Using most recent: {final_skill_date}")
-
-                    # Case 2: Both dates parsed and they match, or only one exists.
-                    # In these cases, final_skill_date is already set correctly.
-                    
-                    # --- END EMBEDDED LOGIC ---
+                    # (End date comparison)
                     
                     # Merge front and back data
                     merged = {
                         "document_type": "DL-40",
-                        "extracted_data": {}
+                        "extracted_data": {
+                            "name": front_data.get("name"),
+                            "dl_number": front_data.get("dl_number"),
+                            "date_of_birth": front_data.get("date_of_birth"),
+                            "skills_test_date": (final_skill_date + warning_sign) if final_skill_date else "N/A",
+                            # FIX: Read capitalized "Exam_Result" and save as lowercase "exam_result"
+                            "exam_result": back_data.get("Exam_Result") 
+                        }
                     }
                     
-                    # Get standard data
-                    merged["extracted_data"]["name"] = front_data.get("name")
-                    merged["extracted_data"]["dl_number"] = front_data.get("dl_number")
-                    # FIX: Add date_of_birth from the front page
-                    merged["extracted_data"]["date_of_birth"] = front_data.get("date_of_birth")
-
-                    # Store the final consolidated date with the warning sign (if any)
-                    if final_skill_date:
-                        merged["extracted_data"]["skills_test_date"] = final_skill_date + warning_sign
-                    else:
-                        merged["extracted_data"]["skills_test_date"] = "N/A"
-                        
-                    # Only keep exam_result from the back page
-                    merged["extracted_data"]["exam_result"] = back_data.get("exam_result")
-                    
-                    # Note: 'exam_date' is excluded from the merged record.
-                    
                     paired.append(merged)
-                    i += 2  # Skip both pages
+                    i += 2  # Skip both pages (Front and Back)
                     continue
             
-            # If no back page found, just add front page
+            # If no back page found, just add the front page
             paired.append(current)
             i += 1
+        
+        # Case 2: This is a DL-40 Back
+        elif is_dl40_back:
+            # This is a lone DL-40 Back page.
+            # It has no name, so it cannot be processed. Discard it.
+            print(f"Skipping lone DL-40 Back document (no name to match).")
+            i += 1
+            continue
+            
+        # Case 3: This is any other document (License, Impact, etc.)
         else:
-            # Not a DL-40 front, just add it
             paired.append(current)
             i += 1
     
@@ -537,13 +518,11 @@ async def read_async():
         await process_files_async(files, display_results=True)
 
 
-
 async def auto_async():
     """
-    Async version of auto() - Processes files, runs consolidation, and returns 
-    a consolidated list of records for preview WITHOUT adding to persistence.
+    Async version of auto() - Processes files from 'dat' folder and returns 
+    a formatted list for preview WITHOUT adding to persistence.
     """
-    global student_table 
     
     files = [f for f in os.listdir(input_folder) if is_valid_input_file(f)]
     
@@ -551,34 +530,41 @@ async def auto_async():
         print("No valid files found in Dat folder.")
         return []
     
-    print(f"Processing {len(files)} files for preview...")
-    
-    # 1. Store the CURRENT state of the persistent table
-    original_table_state = student_table.copy()
-    
-    # 2. Clear the table for temporary, in-memory processing of new files
-    student_table = {} 
+    print(f"Processing {len(files)} files for preview from 'dat' folder...")
     
     try:
-        # 3. Process files and force them to be ADDED to the now-empty global table.
-        # This runs ALL consolidation logic (DL-40 merge, name priority, ITAD merge).
-        # add_to_table_flag=True forces the data into the temporary student_table.
-        await process_files_async(files, display_results=False, add_to_table_flag=True)
+        # 1. Process files and get the RAW results (do NOT add to table)
+        raw_results = await process_files_async(files, display_results=False, add_to_table_flag=False)
 
-        # 4. Pull the CONSOLIDATED, formatted results from the temporary table state
-        consolidated_preview_data = display_table() 
+        # 2. Format the raw results into the preview list
+        formatted_results = []
+        for result, filename in raw_results:
+            if result and not result.get("error"):
+                extracted = result.get("extracted_data", {})
+                
+                # FIX: Check for both lowercase (merged) and uppercase (raw) keys
+                exam_result_value = extracted.get("exam_result") or extracted.get("Exam_Result") or "N/A"
+                
+                formatted_results.append({
+                    "name": extracted.get("name", "N/A"),
+                    "dl_number": extracted.get("dl_number", "N/A"),
+                    "dob": extracted.get("date_of_birth", "N/A"),
+                    "skills_test_date": extracted.get("skills_test_date", "N/A"),
+                    "exam_result": exam_result_value, # Use the normalized value
+                    "ITTD_completion_date": extracted.get("ITTD_completion_date", "N/A"),
+                    "ITAD_completion_date": extracted.get("ITAD_completion_date", "N/A"),
+                    "de_964_number": extracted.get("pt_dee_d_number", "N/A"),
+                    "adee_number": extracted.get("ADEE_number", "N/A"),
+                    "_raw_data": result,  # Store raw data for later use
+                    "_filename": filename  # Store filename for later use
+                })
         
-        # 5. Return the consolidated list for display.
-        return consolidated_preview_data
+        print("Preview processing complete.")
+        return formatted_results
         
     except Exception as e:
-        print(f"Error during preview consolidation: {e}")
+        print(f"Error during preview processing: {e}")
         return []
-    finally:
-        # 6. RESTORE the original persistent table state, discarding the temporary data
-        student_table = original_table_state
-        # We do NOT call save_student_table() here, preserving the original disk state.
-        print("Preview consolidation complete. Restored original table state.")
 
 
 async def process_files_async(files, display_results=True, add_to_table_flag=True):
@@ -992,12 +978,20 @@ def add_to_table(data, filename):
     # Update fields based on document type and available data
     student_record = student_table[student_name]
     
+    #
+    # FIX: NORMALIZE THE EXAM_RESULT KEY BEFORE MAPPING
+    # This checks for the capitalized key and moves it to the lowercase key
+    #
+    if "Exam_Result" in extracted_data and "exam_result" not in extracted_data:
+        extracted_data["exam_result"] = extracted_data.pop("Exam_Result")
+        
+    
     # Map fields from extracted data to table columns
     field_mappings = {
         "dl_number": "dl_number",
         "date_of_birth": "date_of_birth", 
         "skills_test_date": "skills_test_date",
-        "exam_result": "exam_result", # FIX: Correct key for Exam Result
+        "exam_result": "exam_result", # Now this will find the normalized key
         "pt_dee_d_number": "de_964_number",
         "ADEE_number": "adee_number",
         "ITTD_COMPLETION_DATE": "ittd_completion_date", 
@@ -1010,7 +1004,7 @@ def add_to_table(data, filename):
         "itad_completion_date", 
         "de_964_number", 
         "adee_number",
-        "exam_result" # ADDED: Treat exam result as single-source
+        "exam_result" 
     ]
 
     # Update fields if they exist in extracted data and aren't already filled
@@ -1018,11 +1012,9 @@ def add_to_table(data, filename):
         if source_field in extracted_data and extracted_data[source_field]:
             value = extracted_data[source_field]
             
-            # Handle None values
             if value is None or value == "Not found":
                 continue
             
-            # Convert to string and strip
             value = str(value).strip()
             
             if not value:  # Skip empty strings
@@ -1033,16 +1025,14 @@ def add_to_table(data, filename):
                 current_value = student_record[table_field]
                 if not current_value or current_value == "N/A":
                     student_record[table_field] = value
-                    continue # Field filled, move to next source field
+                    continue 
             
             
             # Default logic for shared/multi-source fields (Name, DL#, DOB, Skills Date)
             current_value = student_record[table_field]
             
-            # If the current field is empty, always fill it
             if not current_value or current_value == "N/A":
                 student_record[table_field] = value
-            # If the new value is longer, replace the current value (e.g. better DOB or DL# extraction)
             elif len(str(value)) > len(str(current_value)):
                 student_record[table_field] = value
                 
