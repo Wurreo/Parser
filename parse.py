@@ -208,12 +208,13 @@ async def process_folder_async(folder_info):
         for result, filename in raw_results:
             if result and not result.get("error"):
                 extracted = result.get("extracted_data", {})
+                # This dictionary is what the GUI's render_table function receives
                 formatted_results.append({
                     "name": extracted.get("name", "N/A"),
                     "dl_number": extracted.get("dl_number", "N/A"),
                     "dob": extracted.get("date_of_birth", "N/A"),
                     "skills_test_date": extracted.get("skills_test_date", "N/A"),
-                    "Exam_Result": extracted.get("exam_result", "N/A"),
+                    "exam_result": extracted.get("exam_result", "N/A"), # FIX: This key must be present
                     "ITTD_completion_date": extracted.get("ITTD_completion_date", "N/A"),
                     "ITAD_completion_date": extracted.get("ITAD_completion_date", "N/A"),
                     "de_964_number": extracted.get("pt_dee_d_number", "N/A"),
@@ -417,13 +418,13 @@ def pair_dl40_pages(results):
         current = results[i]
         doc_type = current.get("document_type", "").lower()
         
-        # **FIX: Neutralize the examiner name from the DL-40 back page**
+        # FIX: Neutralize the examiner name from the DL-40 back page
         is_dl40_back = "dl-40-back" in doc_type or "dl-40 back" in doc_type
         if is_dl40_back:
              # Ensure the examiner name (if extracted as 'name') is ignored.
              if "extracted_data" in current and "name" in current["extracted_data"]:
                  current["extracted_data"]["name"] = None
-        # **END FIX**
+        # END FIX
         
         # Check if this is a DL-40-Front
         if "dl-40-front" in doc_type or "dl-40 front" in doc_type:
@@ -492,7 +493,9 @@ def pair_dl40_pages(results):
                     # Get standard data
                     merged["extracted_data"]["name"] = front_data.get("name")
                     merged["extracted_data"]["dl_number"] = front_data.get("dl_number")
-                    
+                    # FIX: Add date_of_birth from the front page
+                    merged["extracted_data"]["date_of_birth"] = front_data.get("date_of_birth")
+
                     # Store the final consolidated date with the warning sign (if any)
                     if final_skill_date:
                         merged["extracted_data"]["skills_test_date"] = final_skill_date + warning_sign
@@ -873,27 +876,58 @@ def get_doc_priority(doc_type):
     if not doc_type:
         return 0
     clean_type = doc_type.lower().strip()
-    # The 'dl-40' entry covers cases where it is merged or simply identified as 'DL-40'
     return PRIORITY_SCORES.get(clean_type, 0)
 
-def goodest_name(name):
+def get_name_completeness_score(name):
     """
     Calculates a score based on name length and word count (higher is better).
-    This function leverages the existing clean_name helper.
     """
     if not name:
         return (0, 0)
     
-    # Note: clean_name is defined earlier in parse.py (around line 497)
     clean = clean_name(name) 
     words = clean.split()
     word_count = len(words)
-    char_count = len(clean) # Total characters in the cleaned name
+    char_count = len(clean) 
     
     # Return as a tuple for lexicographical comparison: (word_count, char_count)
     return (word_count, char_count)
 
 
+def get_best_name(name1, name2, doc_type1=None, doc_type2=None):
+    """
+    Return the best name between two options based on a weighted comparison:
+    1. Document Priority (Higher score wins).
+    2. Name Completeness (Word Count/Length tie-breaker if priorities are equal).
+    """
+    if not name1:
+        return name2
+    if not name2:
+        return name1
+    
+    # 1. Determine Document Priority Score
+    score1 = get_doc_priority(doc_type1)
+    score2 = get_doc_priority(doc_type2)
+    
+    # If priorities are unequal, the name from the higher-priority document wins immediately.
+    if score1 > score2:
+        return name1 
+    if score2 > score1:
+        return name2
+        
+    # 2. If Document Priority is equal, use Name Completeness as the tie-breaker.
+    
+    completeness1 = get_name_completeness_score(name1)
+    completeness2 = get_name_completeness_score(name2)
+    
+    # Compare the tuples (word_count, char_count): 
+    if completeness1 > completeness2:
+        return name1
+    if completeness2 > completeness1:
+        return name2
+    
+    # 3. If everything is equal, keep the original name (name1).
+    return name1
 
 
 def add_to_table(data, filename):
@@ -914,11 +948,6 @@ def add_to_table(data, filename):
     # Find if this student already exists
     matching_student = find_matching_student(raw_name)
     
-    # (Existing Impact Certificate handling logic omitted for brevity, but retained in your file)
-    
-    # Find if this student already exists
-    matching_student = find_matching_student(raw_name)
-    
     if matching_student:
         # Update existing student record
         student_name = matching_student
@@ -930,8 +959,8 @@ def add_to_table(data, filename):
             if "(" in last_doc and ")" in last_doc:
                 existing_doc_type = last_doc.split("(")[-1].replace(")", "")
         
-        # Check if we need to update to a better name (prioritizing length/completeness)
-        better_name = goodest_name(matching_student, raw_name, existing_doc_type, doc_type)
+        # Check if we need to update to a better name (prioritizing document source, then length)
+        better_name = get_best_name(matching_student, raw_name, existing_doc_type, doc_type)
         if better_name != matching_student:
             # Create new entry with better name and copy all data
             student_table[better_name] = student_table[matching_student].copy()
@@ -963,18 +992,27 @@ def add_to_table(data, filename):
     # Update fields based on document type and available data
     student_record = student_table[student_name]
     
-    # Map fields from extracted data to table columns (exam_result is omitted here)
+    # Map fields from extracted data to table columns
     field_mappings = {
         "dl_number": "dl_number",
         "date_of_birth": "date_of_birth", 
         "skills_test_date": "skills_test_date",
-        "Exam_Result": "exam_result", 
+        "exam_result": "exam_result", # FIX: Correct key for Exam Result
         "pt_dee_d_number": "de_964_number",
         "ADEE_number": "adee_number",
         "ITTD_COMPLETION_DATE": "ittd_completion_date", 
         "ITAD_COMPLETION_DATE": "itad_completion_date"  
     }
     
+    # Define single-source fields that must fill if empty, as they usually come from one document
+    single_source_fields = [
+        "ittd_completion_date", 
+        "itad_completion_date", 
+        "de_964_number", 
+        "adee_number",
+        "exam_result" # ADDED: Treat exam result as single-source
+    ]
+
     # Update fields if they exist in extracted data and aren't already filled
     for source_field, table_field in field_mappings.items():
         if source_field in extracted_data and extracted_data[source_field]:
@@ -990,20 +1028,21 @@ def add_to_table(data, filename):
             if not value:  # Skip empty strings
                 continue
             
-            # --- START FIX FOR IMPACT DATES / SINGLE-SOURCE FIELDS ---
-            # Ensure these fields are prioritized and fill the spot if found.
-            if table_field in ["ittd_completion_date", "itad_completion_date", "de_964_number", "adee_number"]:
+            # Logic for single-source fields (must fill if empty)
+            if table_field in single_source_fields:
                 current_value = student_record[table_field]
                 if not current_value or current_value == "N/A":
                     student_record[table_field] = value
                     continue # Field filled, move to next source field
-            # --- END FIX ---
             
             
             # Default logic for shared/multi-source fields (Name, DL#, DOB, Skills Date)
             current_value = student_record[table_field]
+            
+            # If the current field is empty, always fill it
             if not current_value or current_value == "N/A":
                 student_record[table_field] = value
+            # If the new value is longer, replace the current value (e.g. better DOB or DL# extraction)
             elif len(str(value)) > len(str(current_value)):
                 student_record[table_field] = value
                 
@@ -1022,7 +1061,7 @@ def display_table():
             "dl_number": record.get("dl_number") or "N/A",
             "dob": record.get("date_of_birth") or "N/A",
             "skills_test_date": record.get("skills_test_date") or "N/A",
-            "exam_result": record.get("exam_result") or "N/A",
+            "exam_result": record.get("exam_result") or "N/A", # FIX: This key must be present
             "de_964_number": record.get("de_964_number") or "N/A",
             "adee_number": record.get("adee_number") or "N/A",
             "ittd_completion_date": record.get("ittd_completion_date") or "N/A",
