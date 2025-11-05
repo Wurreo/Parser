@@ -53,7 +53,8 @@ def main(page: ft.Page):
                 ft.Text("DL#", expand=1, text_align=ft.TextAlign.CENTER, weight=ft.FontWeight.BOLD, color="#1E293B", size=13),
                 ft.Text("DOB", expand=1, text_align=ft.TextAlign.CENTER, weight=ft.FontWeight.BOLD, color="#1E293B", size=13),
                 ft.Text("Skills Test Date", expand=1, text_align=ft.TextAlign.CENTER, weight=ft.FontWeight.BOLD, color="#1E293B", size=13),
-                ft.Text("Exam Result", expand=1, text_align=ft.TextAlign.CENTER, weight=ft.FontWeight.BOLD, color="#1E293B", size=13),
+                ft.Text("XP", expand=1, text_align=ft.TextAlign.CENTER, weight=ft.FontWeight.BOLD, color="#1E293B", size=13), 
+                ft.Text("XF", expand=1, text_align=ft.TextAlign.CENTER, weight=ft.FontWeight.BOLD, color="#1E293B", size=13), 
                 ft.Text("ITTD", expand=1, text_align=ft.TextAlign.CENTER, weight=ft.FontWeight.BOLD, color="#1E293B", size=13),
                 ft.Text("ITAD", expand=1, text_align=ft.TextAlign.CENTER, weight=ft.FontWeight.BOLD, color="#1E293B", size=13),
                 ft.Text("DE-964", expand=1, text_align=ft.TextAlign.CENTER, weight=ft.FontWeight.BOLD, color="#1E293B", size=13),
@@ -77,7 +78,8 @@ def main(page: ft.Page):
                 ft.Text(record.get("dl_number", "N/A"), text_align=ft.TextAlign.CENTER, expand=1, color="#334155", size=12),
                 ft.Text(record.get("dob", "N/A"), text_align=ft.TextAlign.CENTER, expand=1, color="#334155", size=12),
                 ft.Text(record.get("skills_test_date", "N/A"), text_align=ft.TextAlign.CENTER, expand=1, color="#334155", size=12),
-                ft.Text(record.get("exam_result", "N/A"),text_align=ft.TextAlign.CENTER, expand=1, color="#334155", size=12),
+                ft.Text(record.get("xp", "N/A"),text_align=ft.TextAlign.CENTER, expand=1, color="#334155", size=12), 
+                ft.Text(record.get("xf", "N/A"),text_align=ft.TextAlign.CENTER, expand=1, color="#334155", size=12), 
                 ft.Text(record.get("ittd_completion_date", "N/A"), text_align=ft.TextAlign.CENTER, expand=1, color="#334155", size=12),
                 ft.Text(record.get("itad_completion_date", "N/A"), text_align=ft.TextAlign.CENTER, expand=1, color="#334155", size=12),
                 ft.Text(record.get("de_964_number", "N/A"), text_align=ft.TextAlign.CENTER, expand=1, color="#334155", size=12),
@@ -275,7 +277,8 @@ def main(page: ft.Page):
                 record.get("dl_number", "N/A"),
                 record.get("dob", "N/A"),
                 record.get("skills_test_date", "N/A"),
-                record.get("exam_result", "N/A"),
+                record.get("xf", "N/A"),
+                record.get("xp", "N/A"),
                 record.get("ittd_completion_date", "N/A"),
                 record.get("itad_completion_date", "N/A"),
                 record.get("de_964_number", "N/A"),
@@ -625,7 +628,8 @@ def main(page: ft.Page):
                 ft.Text("DL#", expand=1, weight=ft.FontWeight.BOLD, size=12),
                 ft.Text("DOB", expand=1, weight=ft.FontWeight.BOLD, size=12),
                 ft.Text("Skills Test Date", expand=1, weight=ft.FontWeight.BOLD, size=12),
-                ft.Text("Exam Result", expand=1, weight=ft.FontWeight.BOLD, size=12),
+                ft.Text("XP", expand=1, weight=ft.FontWeight.BOLD, size=12),
+                ft.Text("XF", expand=1, weight=ft.FontWeight.BOLD, size=12),
                 ft.Text("ITTD", expand=1, weight=ft.FontWeight.BOLD, size=12),
                 ft.Text("ITAD", expand=1, weight=ft.FontWeight.BOLD, size=12),
                 ft.Text("DE-964", expand=1, weight=ft.FontWeight.BOLD, size=12),
@@ -674,7 +678,8 @@ def main(page: ft.Page):
                     ft.Text(student.get("dl_number", "N/A"), expand=1, size=11),
                     ft.Text(student.get("dob", "N/A"), expand=1, size=11),
                     ft.Text(student.get("skills_test_date", "N/A"), expand=1, size=11),
-                    ft.Text(student.get("exam_result", "N/A"), expand=1, size=11),
+                    ft.Text(student.get("xp", "N/A"), expand=1, size=11),
+                    ft.Text(student.get("xf", "N/A"), expand=1, size=11),
                     ft.Text(student.get("ittd_completion_date", "N/A"), expand=1, size=11),
                     ft.Text(student.get("itad_completion_date", "N/A"), expand=1, size=11),
                     ft.Text(student.get("de_964_number", "N/A"), expand=1, size=11),
@@ -696,7 +701,7 @@ def main(page: ft.Page):
         def copy_table_handler(e):
             lines = ["Name\tDL#\tDOB\tSkills Test\tResult\tITTD\tITAD\tDE-964\tADEE"]
             for student in students:
-                line = f"{student['name']}\t{student['dl_number']}\t{student['dob']}\t{student['skills_test_date']}\t{student['exam_result']}\t{student['ittd_completion_date']}\t{student['itad_completion_date']}\t{student['de_964_number']}\t{student['adee_number']}"
+                line = f"{student['name']}\t{student['dl_number']}\t{student['dob']}\t{student['skills_test_date']}\t{student['xp']}\t{student['xf']}\t{student['ittd_completion_date']}\t{student['itad_completion_date']}\t{student['de_964_number']}\t{student['adee_number']}"
                 lines.append(line)
             table_str = "\n".join(lines)
             page.set_clipboard(table_str)
