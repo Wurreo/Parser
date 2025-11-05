@@ -6,26 +6,8 @@ import subprocess
 import platform
 from datetime import datetime
 import asyncio
-from parse import auto_async, display_table, select_folder_and_process, process_folder_async, group_students_by_month, delete_student_from_table, export_month_to_excel, add_preview_records_to_table
+from parse import auto_async, select_folder_and_process, process_folder_async, group_students_by_month, delete_student_from_table, export_month_to_excel, save_preview # NEW FUNCTION NAME
 
-# ============================================================================
-# BUG FIXES AND ENHANCEMENTS - October 2025
-# ============================================================================
-# 
-# 1. FIXED: "Add to Table" Button Bug
-#    - Updated add_preview_to_table() to use add_preview_records_to_table()
-#    - Now properly handles raw extraction data stored in preview records
-#    - Data is added to table only when user clicks "Add to Table"
-#    - Shows success/failure feedback with proper snackbar messages
-#
-# 2. ENHANCED: Unknown Table Display
-#    - Modified build_tables_list() to prominently display Unknown table
-#    - Unknown table shows first with orange warning colors
-#    - Special icon and descriptive text for documents without skills_test_date
-#    - Visually separated from regular monthly tables with divider
-#    - Regular tables styled with blue colors and calendar icon
-#
-# ============================================================================
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.abspath(os.path.join(HERE, "..")))
@@ -315,15 +297,14 @@ def main(page: ft.Page):
     def add_preview_to_table():
         """
         Add preview records to the main monthly table.
-        FIXED: Now properly uses raw extraction data instead of formatted display data.
+        FIXED: Now calls the new 'save_preview' persistence hook.
         """
         if not parsed_records:
             show_snackbar("No preview data to add", ft.Colors.RED_400)
             return
         
-        # FIXED: Use the new add_preview_records_to_table function
-        # This function properly handles the raw data stored in _raw_data field
-        added_count = add_preview_records_to_table(parsed_records)
+        # FIXED: Use the new 'save_preview' function (which calls persist_table)
+        added_count = save_preview(parsed_records)
         
         if added_count > 0:
             show_snackbar(f"✅ Added {added_count} records to monthly tables!", ft.Colors.GREEN_400)
