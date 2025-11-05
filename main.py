@@ -699,7 +699,7 @@ def main(page: ft.Page):
         
         # Action buttons
         def copy_table_handler(e):
-            lines = ["Name\tDL#\tDOB\tSkills Test\tResult\tITTD\tITAD\tDE-964\tADEE"]
+            lines = ["Name\tDL#\tDOB\tSkills Test\tXP\tXF\tITTD\tITAD\tDE-964\tADEE"]
             for student in students:
                 line = f"{student['name']}\t{student['dl_number']}\t{student['dob']}\t{student['skills_test_date']}\t{student['xp']}\t{student['xf']}\t{student['ittd_completion_date']}\t{student['itad_completion_date']}\t{student['de_964_number']}\t{student['adee_number']}"
                 lines.append(line)
@@ -836,3 +836,4 @@ def main(page: ft.Page):
     page.add(nav_bar)
 
 ft.app(target=main)
+
