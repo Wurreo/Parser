@@ -241,13 +241,14 @@ async def auto_async():
                 "dl_number": record.get("dl_number", "N/A"),
                 "dob": record.get("date_of_birth", "N/A"),
                 "skills_test_date": record.get("skills_test_date", "N/A"),
-                "exam_result": record.get("exam_result", "N/A"),
+                "xp": record.get("xp", "N/A"),          
+                "xf": record.get("xf", "N/A"),
                 "ittd_completion_date": record.get("ittd_completion_date", "N/A"),
                 "itad_completion_date": record.get("itad_completion_date", "N/A"),
                 "de_964_number": record.get("de_964_number", "N/A"),
                 "adee_number": record.get("adee_number", "N/A"),
-                "_raw_data": record,  # Store the assembled row for saving
-                "_filename": record.get("documents", []) # Store source list
+                "_raw_data": record,  
+                "_filename": record.get("documents", [])
             })
         
         print(f"Preview generation complete. Found {len(formatted_results)} potential records.")
@@ -333,7 +334,8 @@ async def process_folder_async(folder_info):
                 "dl_number": record.get("dl_number", "N/A"),
                 "dob": record.get("date_of_birth", "N/A"),
                 "skills_test_date": record.get("skills_test_date", "N/A"),
-                "exam_result": record.get("exam_result", "N/A"),
+                "xp": record.get("xp", "N/A"),          
+                "xf": record.get("xf", "N/A"),
                 "ittd_completion_date": record.get("ittd_completion_date", "N/A"),
                 "itad_completion_date": record.get("itad_completion_date", "N/A"),
                 "de_964_number": record.get("de_964_number", "N/A"),
@@ -565,7 +567,7 @@ def pair_dl40_pages(results):
         final_skill_date = skill_date_front_str or exam_date_back_str
         warning_sign = ""
         
-        # (Date comparison logic remains the same...)
+        # (Date comparison logic...)
         date_formats = ["%m-%d-%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y", "%B %d, %Y"]
         def safe_parse(date_str):
             if not date_str or date_str.lower() in ["n/a", "not found"]: return None
@@ -585,10 +587,19 @@ def pair_dl40_pages(results):
             warning_sign = " ⚠️" 
             print(f"DL-40 Date Conflict: Front ({str1}) vs. Back ({str2}). Using most recent: {final_skill_date}")
         
-        # Simplified retrieval: TRUSTING THE USER'S EXPECTED KEY
-        exam_result_value = back_data.get("exam_result") or "N/A"
+        # Retrieval of the original result (must be case-insensitive check later)
+        original_exam_result = back_data.get("exam_result") or "N/A"
         
-        print(f"DEBUG: Successfully paired 1 Front and 1 Back. Exam result: {exam_result_value}")
+        # Calculate new XP/XF fields based on the user's requirement
+        if original_exam_result.upper() == "XP":
+            xp_value = "XP"
+            xf_value = "-"
+        else:
+            xp_value = "-"
+            # Fill XF with the actual result (e.g., 'XF' or 'FAIL')
+            xf_value = original_exam_result 
+
+        print(f"DEBUG: Successfully paired 1 Front and 1 Back. XP: {xp_value}, XF: {xf_value}")
 
         # Merge front and back data
         merged = {
@@ -600,7 +611,8 @@ def pair_dl40_pages(results):
                 "date_of_birth": front_data.get("date_of_birth"),
                 # Merged/Resolved Fields
                 "skills_test_date": (final_skill_date + warning_sign) if final_skill_date else "N/A",
-                "exam_result": exam_result_value 
+                "xp": xp_value,          # NEW FIELD
+                "xf": xf_value           # NEW FIELD
             }
         }
         
@@ -622,7 +634,7 @@ def pair_dl40_pages(results):
         print(f"Note: Found {len(dl40_backs)} lone DL-40 Back(s), returning unmerged (contains exam result).")
 
     return dl40_fronts + dl40_backs + others
-  
+
 async def read_async():
     """Async version of read()"""
     files = [f for f in os.listdir(input_folder) if is_valid_input_file(f)]
@@ -719,7 +731,8 @@ def consolidate_records(all_processed_docs_with_files):
                 "dl_number": None,
                 "date_of_birth": None,
                 "skills_test_date": None,
-                "exam_result": None,
+                "xp": None,
+                "xf": None,
                 "de_964_number": None,
                 "adee_number": None,
                 "ittd_completion_date": None,
@@ -738,7 +751,7 @@ def consolidate_records(all_processed_docs_with_files):
         # Map extracted fields (source) to table fields (target)
         field_mappings = {
             "dl_number": "dl_number", "date_of_birth": "date_of_birth", 
-            "skills_test_date": "skills_test_date", "exam_result": "exam_result", 
+            "skills_test_date": "skills_test_date", "xp": "xp", "xf": "xf",
             "pt_dee_d_number": "de_964_number", "adee_number": "adee_number",
             "ittd_completion_date": "ittd_completion_date", "itad_completion_date": "itad_completion_date"  
         }
@@ -1126,7 +1139,8 @@ def group_students_by_month():
                 "dl_number": record["dl_number"] or "N/A",
                 "dob": record["date_of_birth"] or "N/A",
                 "skills_test_date": date_value or "N/A",
-                "exam_result": record.get("exam_result") or "N/A", # ADDED FOR MONTHLY TABLE
+                "xp": record.get("xp") or "N/A",          
+                "xf": record.get("xf") or "N/A",             
                 "ittd_completion_date": record["ittd_completion_date"] or "N/A",
                 "itad_completion_date": record["itad_completion_date"] or "N/A",
                 "de_964_number": record["de_964_number"] or "N/A",
