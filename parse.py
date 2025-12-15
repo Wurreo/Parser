@@ -10,10 +10,7 @@ from tkinter import filedialog
 from pathlib import Path
 from llama_cloud_services import LlamaExtract
 from llama_cloud.client import AsyncLlamaCloud
-from llama_cloud_services.beta.classifier.client import ClassifyClient
 from dotenv import load_dotenv
-from concurrent.futures import ThreadPoolExecutor
-
 
 # === Commands ===
 # === source venv/bin/activate.fish
@@ -438,22 +435,32 @@ def validate_upload_files(file_paths):
 
 async def process_files_batch_async(files):
     """
-    Async batch processing for LlamaExtract.
+    Async batch processing for LlamaExtract. Implements a semaphore to limit
+    concurrent extractions and prevent hitting network resource limits.
+    
     Returns: List of (result_list, filename) tuples. 
              'result_list' is a List[dict] on success, or Exception on failure.
     """
+    MAX_CONCURRENCY = 5  # Limit concurrent extractions to 5
+    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+
+    async def constrained_extract(file_path, filename):
+        async with semaphore:
+            # The actual extraction call (which includes file upload) is now limited
+            return await extract_with_llama_async(file_path, filename)
+
     try:
-        print(f"Processing {len(files)} files in parallel...")
+        print(f"Processing {len(files)} files with max concurrency of {MAX_CONCURRENCY}...")
         
         # Create tasks for all files
         tasks = []
         for filename in files:
             file_path = os.path.join(input_folder, filename)
-            # NOTE: We use extract_with_llama_async here, which calls the DL-40 pairing logic
-            task = extract_with_llama_async(file_path, filename) 
+            # Use the constrained_extract function which respects the semaphore limit
+            task = constrained_extract(file_path, filename) 
             tasks.append(task)
         
-        # Run all extractions concurrently
+        # Run all extractions concurrently (but capped by the semaphore)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Process results
@@ -462,7 +469,7 @@ async def process_files_batch_async(files):
             filename = files[i]
             if isinstance(result, Exception):
                 print(f"  ✗ Failed: {filename} - {str(result)}")
-                # Return the Exception wrapped in a dictionary for consistent handling in the caller
+                # Return the Exception for consistent handling in the caller
                 processed_results.append((Exception(f"Extraction failed: {str(result)}"), filename)) 
             else:
                 print(f"  ✓ Completed: {filename}")
@@ -476,7 +483,7 @@ async def process_files_batch_async(files):
         return []
 
 
-# === Extraction & Document Processing Logic
+# === Extraction & Document Processing Logic ===
 
 def normalize_document_keys(result):
     """
@@ -498,8 +505,9 @@ async def extract_with_llama_async(file_path, filename):
     print(f"Starting extraction for: {file_path}")
     
     try:
-        # 1. Send the full file path to agent
-        result = await asyncio.to_thread(agent.extract, file_path)
+        # 1. Send the full file path to agent using the native asynchronous method (agent.aextract).
+        # This eliminates the event loop conflict (asyncio.run error).
+        result = await agent.aextract(file_path)
         
         # 2. Get the list of results
         results = result.data if hasattr(result, 'data') else result 
@@ -509,7 +517,6 @@ async def extract_with_llama_async(file_path, filename):
             results = [results] if results and not results.get("error") else []
         
         # 4. Run the pairing logic on the full list of extracted pages/documents
-        # Normalization (to lowercase) happens *inside* pair_dl40_pages now.
         paired_results = pair_dl40_pages(results)
         
         # 5. Return the consolidated list
@@ -522,11 +529,11 @@ async def extract_with_llama_async(file_path, filename):
         # Return a list containing an error dictionary for consistent handling
         return [{"error": f"Extraction failed: {str(e)}"}]
 
+
 def pair_dl40_pages(results):
     """
-    Pair DL-40-Front and DL-40-Back pages using non-sequential matching (within the same file).
-    This collects all fronts and backs first, then attempts a 1:1 merge.
-    All extracted keys are normalized to lowercase before use.
+    Pair DL-40-Front and DL-40-Back pages using an ORDERED, COUNT-BASED merge.
+    Includes fix to handle common AI truncation of 'XP' to 'X'.
     """
     dl40_fronts = []
     dl40_backs = []
@@ -544,96 +551,90 @@ def pair_dl40_pages(results):
         if is_dl40_front:
             dl40_fronts.append(normalized_result)
         elif is_dl40_back:
-            # We keep the back page even without a name, as it holds the result.
             dl40_backs.append(normalized_result)
         else:
             others.append(normalized_result)
 
-    # --- Pass 2: Matching and Merging ---
+    # --- Pass 2: Matching and Merging by Order ---
     
-    # Standard Case: 1 Front and 1 Back from the same file
-    if len(dl40_fronts) == 1 and len(dl40_backs) == 1:
+    merged_dl40s = []
+    
+    # Condition: The number of fronts must exactly match the number of backs for a safe merge.
+    if len(dl40_fronts) > 0 and len(dl40_fronts) == len(dl40_backs):
         
-        current = dl40_fronts[0]
-        next_page = dl40_backs[0]
-        
-        # --- PAIRING LOGIC ---
-        front_data = current.get("extracted_data", {})
-        back_data = next_page.get("extracted_data", {})
-        
-        skill_date_front_str = front_data.get("skills_test_date")
-        exam_date_back_str = back_data.get("exam_date") 
-        
-        final_skill_date = skill_date_front_str or exam_date_back_str
-        warning_sign = ""
-        
-        # (Date comparison logic...)
-        date_formats = ["%m-%d-%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y", "%B %d, %Y"]
-        def safe_parse(date_str):
-            if not date_str or date_str.lower() in ["n/a", "not found"]: return None
-            for fmt in date_formats:
-                try: return datetime.strptime(date_str, fmt), date_str
-                except ValueError: continue
-            return None
+        for i in range(len(dl40_fronts)):
+            current = dl40_fronts[i]
+            next_page = dl40_backs[i]
+            
+            # --- PAIRING LOGIC ---
+            front_data = current.get("extracted_data", {})
+            back_data = next_page.get("extracted_data", {})
+            
+            skill_date_front_str = front_data.get("skills_test_date")
+            exam_date_back_str = back_data.get("exam_date") 
+            
+            final_skill_date = skill_date_front_str or exam_date_back_str
+            warning_sign = ""
+            
+            # (Date comparison logic remains the same...)
+            date_formats = ["%m-%d-%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y", "%B %d, %Y"]
+            def safe_parse(date_str):
+                if not date_str or date_str.lower() in ["n/a", "not found"]: return None
+                for fmt in date_formats:
+                    try: return datetime.strptime(date_str, fmt), date_str
+                    except ValueError: continue
+                return None
 
-        parsed_front = safe_parse(skill_date_front_str)
-        parsed_back = safe_parse(exam_date_back_str)
-        obj1, str1 = parsed_front if parsed_front else (None, None)
-        obj2, str2 = parsed_back if parsed_back else (None, None)
+            parsed_front = safe_parse(skill_date_front_str)
+            parsed_back = safe_parse(exam_date_back_str)
+            obj1, str1 = parsed_front if parsed_front else (None, None)
+            obj2, str2 = parsed_back if parsed_back else (None, None)
 
-        if obj1 and obj2 and obj1 != obj2:
-            if obj1 > obj2: final_skill_date = str1
-            else: final_skill_date = str2
-            warning_sign = " ⚠️" 
-            print(f"DL-40 Date Conflict: Front ({str1}) vs. Back ({str2}). Using most recent: {final_skill_date}")
-        
-        # Retrieval of the original result (must be case-insensitive check later)
-        original_exam_result = back_data.get("exam_result") or "N/A"
-        
-        # Calculate new XP/XF fields based on the user's requirement
-        if original_exam_result.upper() == "XP":
-            xp_value = "XP"
-            xf_value = "-"
-        else:
-            xp_value = "-"
-            # Fill XF with the actual result (e.g., 'XF' or 'FAIL')
-            xf_value = original_exam_result 
+            if obj1 and obj2 and obj1 != obj2:
+                if obj1 > obj2: final_skill_date = str1
+                else: final_skill_date = str2
+                warning_sign = " ⚠️" 
+                print(f"DL-40 Date Conflict: Front ({str1}) vs. Back ({str2}). Using most recent: {final_skill_date}")
+            
+            # Retrieval of the original result
+            original_exam_result = back_data.get("exam_result") or "N/A"
+            result_upper = original_exam_result.strip().upper()
+            
+            # --- FIX: Python Override for AI Truncation ---
+            if result_upper == "XP" or result_upper == "X":
+                xp_value = "XP"
+                xf_value = "-"
+            elif result_upper in ["N/A", "NOT FOUND", "-"]:
+                # If nothing meaningful extracted
+                xp_value = "N/A"
+                xf_value = "N/A"
+            else:
+                # Any other code (XFVL, XF, FAIL) is treated as a confirmed failure.
+                xp_value = "-"
+                xf_value = "XF" 
 
-        print(f"DEBUG: Successfully paired 1 Front and 1 Back. XP: {xp_value}, XF: {xf_value}")
+            print(f"DEBUG: Successfully paired DL-40 {i+1} by order. XP: {xp_value}")
 
-        # Merge front and back data
-        merged = {
-            "document_type": "DL-40",
-            "extracted_data": {
-                # Name MUST come ONLY from front
-                "name": front_data.get("name"), 
-                "dl_number": front_data.get("dl_number"),
-                "date_of_birth": front_data.get("date_of_birth"),
-                # Merged/Resolved Fields
-                "skills_test_date": (final_skill_date + warning_sign) if final_skill_date else "N/A",
-                "xp": xp_value,          # NEW FIELD
-                "xf": xf_value           # NEW FIELD
+            # Create merged document
+            merged = {
+                "document_type": "DL-40",
+                "extracted_data": {
+                    "name": front_data.get("name"), 
+                    "dl_number": front_data.get("dl_number"),
+                    "date_of_birth": front_data.get("date_of_birth"),
+                    "skills_test_date": (final_skill_date + warning_sign) if final_skill_date else "N/A",
+                    "xp": xp_value,          
+                    "xf": xf_value           
+                }
             }
-        }
+            merged_dl40s.append(merged)
         
-        return [merged] + others # Return the single merged DL-40 plus all others
+        return merged_dl40s + others 
 
-    # Fallback/Error Handling: If no merge or multiple parts found
-    
-    # If the file contains multiple DL-40 documents or mismatched pairs, we cannot safely merge.
-    if len(dl40_fronts) > 1 or len(dl40_backs) > 1:
-        print(f"Warning: Skipping DL-40 merge due to multiple parts ({len(dl40_fronts)} Fronts, {len(dl40_backs)} Backs). Returning unmerged documents.")
-        # Return all documents un-merged so they can be individually consolidated
-        return dl40_fronts + dl40_backs + others 
-    
-    # If only fronts or only backs exist, the originals are returned un-merged.
-    if len(dl40_fronts) == 1 and len(dl40_backs) == 0:
-        print("Note: Found lone DL-40 Front, returning unmerged.")
-    
-    if len(dl40_fronts) == 0 and len(dl40_backs) >= 1:
-        print(f"Note: Found {len(dl40_backs)} lone DL-40 Back(s), returning unmerged (contains exam result).")
-
-    return dl40_fronts + dl40_backs + others
+    else:
+        # Fallback: If counts don't match (e.g., 2 Fronts, 1 Back), documents are returned unmerged.
+        print(f"Warning: Cannot merge DL-40s. Mismatch in counts ({len(dl40_fronts)} Fronts, {len(dl40_backs)} Backs). Documents returned unmerged.")
+        return dl40_fronts + dl40_backs + others
 
 async def read_async():
     """Async version of read()"""
